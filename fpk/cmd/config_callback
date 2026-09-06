@@ -1,0 +1,34 @@
+#!/bin/sh
+# cmd/config_callback — 用户在应用中心修改配置并提交时调用。
+# 复用 install_callback 写入最新配置（它会读取 WIZARD_* 环境变量），
+# 然后重启服务使配置生效。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含 set -x trace，仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === config_callback start args=[$*] ==="
+set -x
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# 写入配置（与首次安装一致）
+"$SELF_DIR/install_callback" || true
+
+# 重启服务使配置生效
+"$SELF_DIR/main" stop >/dev/null 2>&1 || true
+"$SELF_DIR/main" start >/dev/null 2>&1 || true
+
+exit 0

@@ -1,0 +1,11 @@
+[
+  {
+    "stepTitle": "卸载提示",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "卸载 UPS 助手将删除全部配置数据（UPS 连接配置、NUT 认证、API Token 等），且不可恢复。如需保留，请先记录相关配置。"
+      }
+    ]
+  }
+]

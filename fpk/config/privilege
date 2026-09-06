@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "root"
+  },
+  "username": "UPS-Helper",
+  "groupname": "UPS-Helper"
+}

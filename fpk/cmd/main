@@ -1,0 +1,37 @@
+#!/bin/sh
+# cmd/main — 飞牛生命周期入口（start | stop | status）
+#
+# 转发到核心二进制 app/UPS-Helper（安装后位于 TRIM_APPDEST/UPS-Helper，
+# 即 /var/apps/UPS-Helper/target/UPS-Helper）。cmd/main 保持为 shell 脚本：
+#   1) 不把 7.29MB 的 Go 二进制复制两份进包（fpk 体积 3.78MB 而非 6.89MB）；
+#   2) CGI 仍由 app/ui/index.cgi 经 -cgi 子命令处理，本脚本只管生命周期。
+#
+# app/UPS-Helper 的 start/stop/status 已实现 setsid 守护、pidfile、SIGTERM 优雅退出，
+# 此处直接 exec 转发参数即可（exec 让本进程替换为后端二进制，由它自行 daemonize）。
+
+# 定位核心二进制：优先 TRIM_APPDEST（飞牛必注入），本地未注入时回退 cmd/ 的兄弟 app/。
+APP_BIN="${TRIM_APPDEST:-}"
+if [ -z "$APP_BIN" ]; then
+  DIR=$(cd "$(dirname "$0")" && pwd)
+  APP_BIN="$DIR/../app/UPS-Helper"
+else
+  APP_BIN="$APP_BIN/UPS-Helper"
+fi
+
+if [ ! -x "$APP_BIN" ]; then
+  echo "核心二进制未找到或不可执行: $APP_BIN" >&2
+  exit 1
+fi
+
+# 统一配置路径：显式把飞牛托管配置目录（TRIM_PKGETC）下的 config.json 传给后端。
+# 应用自身也会从 TRIM_PKGETC 推导（config.ResolvePath），此处再显式传一次是双保险。
+# 必须保证「应用读写的 config.json」与「生命周期脚本写/删的 config.json」是同一个文件：
+# 若应用落到硬编码的 /etc/UPS助手/config.json，而脚本操作 $TRIM_PKGETC，
+# 卸载删除的将是应用根本不读的那份——用户填过的 remote_ups 永远清不掉、
+# 重装后又被读回（换浏览器/换设备都一样，因为值来自服务端）。
+CFG_ARGS=""
+if [ -n "${TRIM_PKGETC:-}" ]; then
+  CFG_ARGS="-c ${TRIM_PKGETC}/config.json"
+fi
+
+exec "$APP_BIN" "$@" $CFG_ARGS

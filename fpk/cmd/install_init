@@ -1,0 +1,62 @@
+#!/bin/sh
+# cmd/install_init — 安装向导收集完成后、install_callback 之前由 fnOS 调用。
+# 职责：准备数据与配置目录，检查运行环境（不阻断安装）。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含 set -x trace，仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === install_init start args=[$*] ==="
+echo "ENV TRIM_APPDEST=${TRIM_APPDEST:-<unset>} TRIM_PKGETC=${TRIM_PKGETC:-<unset>} TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>} TRIM_TEMP_LOGFILE=${TRIM_TEMP_LOGFILE:-<unset>}"
+set -x
+
+mkdir -p "${TRIM_PKGVAR}" "${TRIM_PKGETC}"
+
+# 自带 usbip 客户端随 fpk 分发于 cmd/usbip（官方拓扑：/var/apps/<name>/cmd/usbip，
+# 与 TRIM_APPDEST 的 target/ 同父兄弟）。fnOS 安装为 zip 解包，不会自动 chmod +x，
+# 故此处显式赋予可执行位。注意：TRIM_APPDEST 指向 /vol[x]/@appcenter/<name>（跨挂载点），
+# 无法靠 dirname 推导 cmd/ 真实路径，因此直接遍历应用根下 cmd/usbip 并容错处理。
+SELF_USBIP=""
+for cand in "/var/apps/UPS-Helper/cmd/usbip" "${TRIM_APPDEST}/../cmd/usbip"; do
+  if [ -f "$cand" ]; then
+    SELF_USBIP="$cand"
+    break
+  fi
+done
+if [ -n "$SELF_USBIP" ]; then
+  chmod 0755 "$SELF_USBIP"
+  echo "install_init: 已为自带 usbip 赋可执行位 ($SELF_USBIP)" >>"$LOGFILE"
+else
+  echo "install_init: 警告 未随包分发 usbip，自动挂载将不可用，请确认 fpk 构建完整" >>"$LOGFILE"
+fi
+
+# 应用入口走飞牛反代：app/ui/config 不声明 port，飞牛 Nginx 会把页面
+# 反代到 /cgi/ThirdParty/UPS-Helper/index.cgi/。该 CGI 必须可执行，否则入口
+# 会直接 500。fpk 是 zip 解包，不保留可执行位，故在此显式赋权。
+# 注意：飞牛硬性要求 CGI 可执行文件必须命名为 index.cgi（用 proxy.cgi 等其它
+# 名字会直接报 "cgi executable must be index.cgi"）。
+# 注意：ui/ 位于 target/（TRIM_APPDEST）之下，这里是真实路径，可直接拼接。
+SELF_CGI="${TRIM_APPDEST}/ui/index.cgi"
+if [ -f "$SELF_CGI" ]; then
+  chmod 0755 "$SELF_CGI"
+  echo "install_init: 已为 CGI 代理赋可执行位 ($SELF_CGI)" >>"$LOGFILE"
+else
+  echo "install_init: 警告 未找到 $SELF_CGI，飞牛入口将无法打开（请确认 fpk 构建完整）" >>"$LOGFILE"
+fi
+
+# 注：vhci-hcd 内核模块由 fnOS 系统层已提供，无需也不应手动 modprobe。
+
+echo "install_init: 准备目录完成" >>"$LOGFILE"
+exit 0

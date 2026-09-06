@@ -1,0 +1,74 @@
+#!/bin/sh
+# cmd/upgrade_callback — 升级完成后由 fnOS 调用。
+# 职责：确保旧进程退出后，用新二进制拉起服务（fnOS 升级后不会自动 start，
+# 必须在此显式重启，否则新版二进制不生效）。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含 set -x trace，仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === upgrade_callback start args=[$*] ==="
+# 日志若落在 /tmp（TRIM_TEMP_LOGFILE），升级完成后会被框架清理；退出前同步一份到
+# 持久目录，保证升级后仍可取证。
+trap 'cp "$LOGFILE" "$LOG_DIR/lifecycle.log" 2>/dev/null || true' EXIT
+set -x
+
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+PIDFILE="${TRIM_PKGVAR:-/var/lib/UPS-Helper}/UPS-Helper.pid"
+
+if [ -f "$PIDFILE" ]; then
+  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill -INT "$PID" 2>/dev/null || true
+    i=0
+    while kill -0 "$PID" 2>/dev/null; do
+      i=$((i+1)); [ "$i" -ge 10 ] && break; sleep 1
+    done
+    if kill -0 "$PID" 2>/dev/null; then
+      kill -KILL "$PID" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PIDFILE"
+fi
+
+# 升级后 etc 可能已被飞牛重置：若配置缺失或 remote_ups 为空，先从 var 备份还原。
+# 必须在 cmd/main start 之前——否则 ensure_config 见配置缺失会先写空白默认值。
+# （var 目录升级不清，备份由 upgrade_init 在升级前写入）
+VAR_DIR="${TRIM_PKGVAR:-/var/lib/UPS-Helper}"
+VAR_BAK="$VAR_DIR/UPS-Helper-config.bak"
+CFG="${TRIM_PKGETC}/config.json"
+if [ -f "$VAR_BAK" ]; then
+  NEED=""
+  if [ ! -f "$CFG" ]; then
+    NEED="缺失"
+  else
+    OLD_UPS=$(grep -o '"remote_ups"[[:space:]]*:[[:space:]]*"[^"]*"' "$CFG" 2>/dev/null \
+              | head -n1 | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/')
+    [ -z "$OLD_UPS" ] && NEED="为空"
+  fi
+  if [ -n "$NEED" ]; then
+    mkdir -p "$(dirname "$CFG")"
+    cp "$VAR_BAK" "$CFG"
+    chmod 600 "$CFG"
+    echo "upgrade_callback: 检测到配置$NEED，已从 $VAR_BAK 还原" >>"$LOGFILE"
+  fi
+fi
+
+# 用新二进制重新启动服务（cmd/main start 自带 pidfile 幂等保护）
+"$SELF_DIR/main" start >/dev/null 2>&1 || true
+
+echo "upgrade_callback: 已用新二进制重启服务" >>"$LOGFILE"
+exit 0

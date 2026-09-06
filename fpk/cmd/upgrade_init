@@ -1,0 +1,56 @@
+#!/bin/sh
+# cmd/upgrade_init — 升级前由 fnOS 调用，停止旧进程以便替换二进制。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含 set -x trace，仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === upgrade_init start args=[$*] ==="
+# 日志若落在 /tmp（TRIM_TEMP_LOGFILE），升级完成后会被框架清理；退出前同步一份到
+# 持久目录，保证升级后仍可取证。
+trap 'cp "$LOGFILE" "$LOG_DIR/lifecycle.log" 2>/dev/null || true' EXIT
+set -x
+
+# 飞牛升级会重置 etc（TRIM_PKGETC）目录——官方 framework 文档要求应用在升级脚本
+# 里自行完成"配置迁移"。此处在升级前（旧进程仍在、etc 尚未被重置）把 config.json
+# 备份到 var（TRIM_PKGVAR，升级不清），供升级后的 upgrade_callback / install_callback
+# 还原，避免用户填写的「UPS 名称@IP地址」等连接配置在升级后丢失。
+VAR_DIR="${TRIM_PKGVAR:-/var/lib/UPS-Helper}"
+mkdir -p "$VAR_DIR"
+if [ -f "${TRIM_PKGETC}/config.json" ]; then
+  cp "${TRIM_PKGETC}/config.json" "$VAR_DIR/UPS-Helper-config.bak"
+  chmod 600 "$VAR_DIR/UPS-Helper-config.bak"
+  echo "upgrade_init: 已备份配置到 $VAR_DIR/UPS-Helper-config.bak" >>"$LOGFILE"
+else
+  echo "upgrade_init: 未找到 ${TRIM_PKGETC}/config.json，跳过备份" >>"$LOGFILE"
+fi
+
+PIDFILE="${TRIM_PKGVAR:-/var/lib/UPS-Helper}/UPS-Helper.pid"
+
+if [ -f "$PIDFILE" ]; then
+  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill -INT "$PID" 2>/dev/null || true
+    i=0
+    while kill -0 "$PID" 2>/dev/null; do
+      i=$((i+1)); [ "$i" -ge 10 ] && break; sleep 1
+    done
+    kill -KILL "$PID" 2>/dev/null || true
+  fi
+  rm -f "$PIDFILE"
+fi
+
+echo "upgrade_init: 已停止旧进程，准备升级" >>"$LOGFILE"
+exit 0

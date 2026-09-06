@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="RkLdgxtIUBgb9ttM1eggA5">
+<head data-page-node-id="HpZ1k9piklh2Jh43hvJU8Y">
+<meta charset="UTF-8" data-page-node-id="2rGrdavvmHRwAkFTEzsCtx" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="UOH7FVLG9LjkCpiXyQe2qr" />
+<title>UPS 助手</title>
+<style>
+  /* ========================================================================
+   * 设计令牌（Design Tokens）
+   * 语法义化、单色优先：颜色仅表达状态/操作/数据；
+   * 克制几何，拒绝装饰渐变、发光、阴影、玻璃拟态。
+   * ===================================================================== */
+  :root {
+    /* 表面（背景层级） */
+    --surface-canvas: #f4f6fa;   /* 页面底色 */
+    --surface-card:   #ffffff;   /* 卡片表面 */
+    --surface-sunken: #f1f3f7;   /* 输入框/凹槽/进度轨道 */
+    /* 文本 */
+    --text-primary:   #1f2937;
+    --text-secondary: #6b7280;
+    --text-on-accent: #ffffff;
+    /* 边框 */
+    --border-subtle:  #eef1f5;
+    --border-default: #e5e7eb;
+    --border-strong:  #d4d8df;
+    /* 强调（品牌主色，同时满足 fnOS 同系蓝与克制原则） */
+    --accent:         #2f6bff;
+    /* 状态色（均配非颜色文字线索，不单独依赖色相） */
+    --state-success:      #16a34a;
+    --state-success-soft: #e7f6ec;
+    --state-warning:      #d97706;
+    --state-warning-soft: #fbf0dc;
+    --state-error:        #e23b3b;
+    --state-error-soft:   #fdecec;
+    /* 形状与节奏 */
+    --radius-sm:  7px;
+    --radius:     14px;   /* 卡片 */
+    --radius-input: 9px;
+    --radius-btn: 10px;
+    --radius-pill: 999px;
+    --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+    --space-4: 14px; --space-5: 16px; --space-6: 22px; --space-8: 24px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+    background: var(--surface-canvas); color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px; line-height: 1.5;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: var(--space-8) var(--space-5) var(--space-8); }
+  header.top {
+    display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-6);
+  }
+  .logo {
+    width: 44px; height: 44px; border-radius: var(--radius-input); flex: none;
+    object-fit: cover; display: block;
+  }
+  .title h1 { margin: 0; font-size: 19px; font-weight: 650; }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: var(--space-2);
+    padding: var(--space-1) 11px; border-radius: var(--radius-pill); font-size: 12.5px; font-weight: 600;
+    background: var(--surface-sunken); color: var(--text-secondary); border: 1px solid var(--border-default);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-secondary); }
+  .dot.ok { background: var(--state-success); }
+  .dot.bad { background: var(--state-error); }
+  .dot.warn { background: var(--state-warning); }
+  .dot.info { background: var(--accent); }
+
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--space-4); }
+  @media (max-width: 620px){ .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface-card); border: 1px solid var(--border-default); border-radius: var(--radius);
+    padding: var(--space-5) var(--space-5);
+  }
+  .card h2 {
+    margin: 0 0 var(--space-4); font-size: 13.5px; font-weight: 650; color: var(--text-secondary);
+    display: flex; align-items: center; gap: var(--space-2); letter-spacing: .2px;
+  }
+  .metric { display: flex; justify-content: space-between; align-items: baseline; padding: var(--space-2) 0; border-bottom: 1px dashed var(--border-default); }
+  .metric:last-child { border-bottom: none; }
+  .metric .k { color: var(--text-secondary); font-size: 13px; white-space: nowrap; flex: none; margin-right: var(--space-3); }
+  .metric .v { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .metric .v small { color: var(--text-secondary); font-weight: 400; margin-left: 3px; }
+
+  .flags { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+  /* metric 行内的状态标签：容器填满剩余宽度、内部右对齐；标签过长时换行，label 保持一行 */
+  .metric .v.flags { flex: 1; justify-content: flex-end; align-items: center; }
+  .flag {
+    font-size: 11.5px; font-weight: 700; letter-spacing: .4px;
+    padding: 3px 9px; border-radius: var(--radius-sm); border: 1px solid var(--border-default);
+    color: var(--text-secondary); background: var(--surface-sunken);
+  }
+  .flag.on { color: var(--state-success); background: var(--state-success-soft); border-color: transparent; }
+
+  .bar { height: 8px; border-radius: 6px; background: var(--surface-sunken); overflow: hidden; margin-top: var(--space-2); border: 1px solid var(--border-default); }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+
+  form .row { margin-bottom: var(--space-4); }
+  label { display: block; font-size: 12.5px; color: var(--text-secondary); margin-bottom: var(--space-2); font-weight: 600; }
+  input[type="text"], input[type="password"] {
+    width: 100%; padding: 9px 11px; border-radius: var(--radius-input); border: 1px solid var(--border-default);
+    background: var(--surface-sunken); color: var(--text-primary); font-size: 13.5px; outline: none;
+  }
+  input:focus { border-color: var(--accent); background: var(--surface-card); }
+  .helplink { display: inline-block; margin-top: 6px; font-size: 12.5px; font-weight: 700; color: var(--state-warning); text-decoration: none; }
+  .helplink:hover { text-decoration: underline; }
+  .switch { position: relative; display: inline-block; width: 40px; height: 22px; margin-bottom: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: var(--border-default); border-radius: var(--radius-pill); transition: .2s; }
+  .slider:before { content: ""; position: absolute; height: 16px; width: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider:before { transform: translateX(18px); }
+  .switchrow { display: flex; align-items: center; gap: var(--space-3); margin-top: 0px; }
+  .switchrow span { font-size: 13.5px; display: inline-flex; align-items: center; height: 22px; line-height: 1; }
+
+  /* NUT 认证「?」帮助图标 + 悬浮提示：把默认凭据说明从常驻文案改为 hover 显示，避免占据页面空间 */
+  .field-title { position: relative; display: flex; align-items: center; }
+  .help-tip {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 15px; height: 15px; margin-left: 0;
+    font-size: 11px; font-weight: 700; line-height: 1;
+    color: var(--accent); background: #eef3ff;
+    border: 1px solid var(--border-default); border-radius: 50%;
+    cursor: help; user-select: none; vertical-align: middle;
+  }
+  .help-pop {
+    display: none; position: absolute; z-index: 60;
+    top: 100%; left: 0;
+    width: max-content; max-width: 300px;
+    padding: 10px 12px; border-radius: var(--radius-input);
+    background: var(--surface-card); border: 1px solid var(--border-strong);
+    box-shadow: 0 8px 24px rgba(15,23,42,.14);
+  }
+  .help-tip:hover + .help-pop,
+  .help-tip:focus + .help-pop,
+  .help-pop:hover { display: block; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 6px 12px; border-radius: var(--radius-btn); border: 1px solid transparent;
+    font-size: 13px; font-weight: 650; cursor: pointer; transition: .15s;
+  }
+  .btn.primary { background: var(--accent); color: var(--text-on-accent); }
+  .btn.primary:hover { filter: brightness(1.05); }
+  .btn.primary:disabled { opacity: .55; cursor: default; }
+  .actions { display: flex; gap: 10px; margin-top: var(--space-1); flex-wrap: wrap; }
+
+  .hint { font-size: 12px; color: var(--text-secondary); margin-top: var(--space-2); }
+  .msg { margin-top: var(--space-3); font-size: 13px; padding: 9px 12px; border-radius: var(--radius-input); display: none; }
+  .msg.ok { display: block; background: var(--state-success-soft); color: var(--state-success); }
+  .msg.err { display: block; background: var(--state-error-soft); color: var(--state-error); }
+
+  /* 挂载引导横幅：告诉用户「设备挂好再去飞牛设置页」，避免其提前开关导致飞牛缓存"无 UPS" */
+  .banner {
+    display: flex; align-items: center; gap: var(--space-3);
+    padding: 12px 14px; border-radius: var(--radius);
+    border: 1px solid var(--border-default); background: var(--surface-card);
+    margin-bottom: var(--space-5);
+  }
+  .banner .dot { flex: none; }
+  .banner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .banner-title { font-size: 14px; font-weight: 650; color: var(--text-primary); }
+  .banner-sub { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; }
+  .banner.ok { background: var(--state-success-soft); border-color: transparent; }
+  .banner.ok .banner-title { color: var(--state-success); }
+  .banner.warn { background: var(--state-warning-soft); border-color: transparent; }
+  .banner.warn .banner-title { color: var(--state-warning); }
+  .banner.info { background: #eef3ff; border-color: transparent; }
+  .banner.info .banner-title { color: var(--accent); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: var(--surface-sunken); padding: 2px 6px; border-radius: 5px; color: var(--accent); }
+  footer { margin-top: var(--space-6); text-align: center; color: var(--text-secondary); font-size: 12px; }
+</style>
+</head>
+<body data-page-node-id="3sMASl9kEEsby2kogboIvF" style="background:#fff">
+<div class="wrap" data-page-node-id="IYU62Li16Mz0TkqLEIFUaP">
+  <header class="top" data-page-node-id="CSEEIzMVZ0qyUwOj5YBJ44">
+    <img class="logo" src="images/icon-64.png" alt="UPS 助手" data-page-node-id="xaQ3HyMrjlD7XvBBc73BjS" />
+    <div class="title" data-page-node-id="r7pFozzVFoAyafeZfFvrMF">
+      <h1 data-page-node-id="FzJwHPGP53J7btzhdUys9Y">UPS 助手</h1>
+    </div>
+    <div class="spacer" data-page-node-id="jwOeaCaEp2SmjJ9XViJMHZ"></div>
+    <span class="pill" id="connPill" data-page-node-id="OFZMB7tdDapCxoQ5JejPi0"><span class="dot" id="connDot" data-page-node-id="28uGkCkvzCbs7dNwar7aB2"></span><span id="connText" data-page-node-id="oqbfZEfrUl58fF7IjHFoy1">连接中…</span></span>
+  </header>
+
+  <div class="banner" id="mountBanner" data-page-node-id="QLSPewDVXm7h6e3gCkD3qo">
+    <span class="dot" id="mountDot" data-page-node-id="Z7bZamz2xktIsM6G4MwSp0"></span>
+    <div class="banner-body" data-page-node-id="woVzSoOJZaBUN8xNblPfnk">
+      <div class="banner-title" id="mountTitle" data-page-node-id="8t336AUGUz8ttVGIwTmcYo">初始化中…</div>
+      <div class="banner-sub" id="mountSub" data-page-node-id="1Yz2kAmmbeYR4O9CL0ZO5n"></div>
+    </div>
+  </div>
+
+  <div class="grid" data-page-node-id="fbAHRaSArYhBkOHZYxJIOj">
+    <!-- UPS 状态（实时状态 + 电池） -->
+    <div class="card" data-page-node-id="GWeQsgDd3Y1GY3uyWcH54c">
+      <h2 data-page-node-id="vYcpoqDD3xqtbhAIfiBgiO">UPS 状态</h2>
+      <div class="metric" data-page-node-id="nNguDCmF0d54quRjAMGE3v"><span class="k" data-page-node-id="oenVDmxlbAlpxwFHFxjB5E">输入电压</span><span class="v" id="mInV" data-page-node-id="EFKNo9kawa4TZdnpGlX5ng">—<small data-page-node-id="PhetqW3dsAjk6yE9BdBesJ">V</small></span></div>
+      <div class="metric" data-page-node-id="i4HdyELS7sgx0NxfU35vos"><span class="k" data-page-node-id="fOyT7XQAu2Xnyfc90Q31UK">输出电压</span><span class="v" id="mOutV" data-page-node-id="VzyBFCuD224zAUt7KCc09k">—<small data-page-node-id="Pt8YWCsnuadFivZXXPSHhv">V</small></span></div>
+      <div class="metric" data-page-node-id="USOKW2BZJ8NpmZwCrq2LLA"><span class="k" data-page-node-id="U6RSD57tDku6nSQaTjAwk1">电池电压</span><span class="v" id="mBatV" data-page-node-id="HVW8CtYKs9G7gnYWBL0KVP">—<small data-page-node-id="VXLs370H6kxcNJJ9JTPONB">V</small></span></div>
+      <div class="metric" data-page-node-id="DuYSWZmxjz7p11iwZDhpaV"><span class="k" data-page-node-id="FmtSaDhRD3vVhna8QAaM0A">输入频率</span><span class="v" id="mFreq" data-page-node-id="49LTHO48TIZaTcfH3QDHpP">—<small data-page-node-id="VtTw5WJWEkxtX7sYvZBkVj">Hz</small></span></div>
+      <div class="metric" data-page-node-id="Je1d8jqLwgBMfIKiA1E63B"><span class="k" data-page-node-id="UFr2uA5PcTHGO4daHlQYgi">续航估算</span><span class="v" id="mRun" data-page-node-id="RW6H85kiKXFmMBBAwB76Gt">—</span></div>
+      <div class="metric" data-page-node-id="7jK3xyKP40WyrMLQzxyfry"><span class="k" data-page-node-id="sdmvTgwb48coaETElnevvG">UPS 状态</span><span class="v flags" id="mStatus" data-page-node-id="UXydzxQNeqhyIiIiORHHgS"></span></div>
+      <div style="height:14px" data-page-node-id="JvGWLufu9O4ZXcQkSoez7r"></div>
+      <div class="metric" data-page-node-id="QsaVVHyGQpdRu20chyVgwi"><span class="k" data-page-node-id="yevb5AppwiJElq3pt4sfH2">电池容量</span><span class="v" id="mCharge" data-page-node-id="9QWgvbewa8mE67YD0ttDZz">—<small data-page-node-id="rhv4TbCoD8oHb8pRJrkm9F">%</small></span></div>
+      <div class="bar" data-page-node-id="yqRKqBTiGARkrbg1KogNHB"><i id="chargeBar" style="width:0%" data-page-node-id="qzyzf8lXNzZAmRkFHHINVb"></i></div>
+    </div>
+
+    <!-- 配置 -->
+    <div class="card" data-page-node-id="kaBzEDvFCBavGAkpaDjOR0">
+      <h2 data-page-node-id="U4IvnrgtQGSj7hXL9pAoG1">连接配置（保存后立即生效，无需重启）</h2>
+      <form id="cfgForm" data-page-node-id="TKG0DYWJ3rSS3sMr0kDdpd">
+        <div class="row" data-page-node-id="Le89gPZAR8ly2DPBsHlQFm">
+          <label for="fRemote" data-page-node-id="CqAcUR0CkAhW8CBuLfWgc2">UPS 名称@IP地址</label>
+          <input type="text" id="fRemote" placeholder="例如 ups@192.168.1.50" autocomplete="off" data-page-node-id="lu9RLkWLA447SpD4qZhQAA" />
+          <a class="helplink" href="https://www.bilibili.com/video/BV1FWju6iEuo/?share_source=copy_web&vd_source=b4ea3a543ab0f88f1da418b99b68d77a" target="_blank" rel="noopener" data-page-node-id="2jQdJyN9P8rNvTvhnWGri6">不知道 UPS 名称？</a>
+        </div>
+        <div class="row" data-page-node-id="DrBQEdNs59l28p9gHHR36i">
+          <label class="field-title" data-page-node-id="mBOQYespEeR1ARFQtkDBs8">NUT 认证（主服务器要求认证时开启）
+            <span class="help-tip" tabindex="0" role="img" aria-label="查看默认凭据说明">?</span>
+            <div class="help-pop" role="tooltip">
+              <div class="hint" style="line-height:2; margin-top:0px" data-page-node-id="HDpBoFeta4MoxSqSC8wuh9">群晖默认 <code data-page-node-id="rX0FW1i4J0bOAD33ZEowWV">monuser</code> / <code data-page-node-id="6XeC4BH4nDkAtscdZoNiEI">secret</code>；<br data-page-node-id="VvhYN0SregPxFVu20sREsZ">TrueNAS 默认 <code data-page-node-id="vxl4H753KT6xvV3nOlfRYN">upsmon</code> / <code data-page-node-id="WehEm2EtBwHo8UrAiSO71V">fixmepass</code>。<br data-page-node-id="gqfyiuapcQm4qgqCE5bCUn">连不上时以主服务器实际配置为准。</div>
+            </div>
+          </label>
+          <div class="switchrow" data-page-node-id="2UKmHR6XjxlLTNzzefPGRB">
+            <label class="switch" data-page-node-id="MwNjz6VBMKCtlUwelBWxXM"><input type="checkbox" id="fAuthOn" data-page-node-id="lQiTmPRQ2jHiEkiNpwzBek" /><span class="slider" data-page-node-id="ZSTjShs7TldSKBOIZFfRz5"></span></label>
+            <span id="fAuthLabel" data-page-node-id="b7iqPjO8vdmO3K6n6la8sr">关闭</span>
+          </div>
+          <div id="authFields" style="display:none; margin-top:0px" data-page-node-id="J5CPJCgvk4qysrOWH4ow8g">
+            <div class="grid" style="gap: var(--space-2)" data-page-node-id="PqRZ2CC3SEuDWGxNiavC8x">
+              <div class="row" style="margin-bottom: var(--space-2)" data-page-node-id="8rgnITAR0jDGmChcyVlx0F">
+                <label for="fNUTUser" data-page-node-id="1X5SuyXZBSKj6d6OHoFeJj">用户名</label>
+                <input type="text" id="fNUTUser" placeholder="monuser" autocomplete="off" data-page-node-id="0FgbnVCdoPEyvhOoCRIBHZ" />
+              </div>
+              <div class="row" style="margin-bottom: var(--space-2)" data-page-node-id="3U7ta59srbOpSuARzSlXqY">
+                <label for="fNUTPass" data-page-node-id="zW2vLbGpFWyMOcAF4zQq5C">密码</label>
+                <input type="password" id="fNUTPass" placeholder="trim-secret" autocomplete="off" data-page-node-id="tzuIV3btA8AISSX4FoWs8U" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="actions" style="margin-top:0px" data-page-node-id="tj2qGxXkuPnoaPrCMKyoRL">
+          <button type="submit" class="btn primary" id="saveBtn" data-page-node-id="zL2eF2ZHBwYFWOsvHcipD3">保存配置</button>
+        </div>
+        <div class="msg" id="msg" data-page-node-id="gtHQyFdTCR3VAZBpKmNneR"></div>
+      </form>
+    </div>
+  </div>
+
+  <footer data-page-node-id="uNIM4AoBOHDxSPdTcAs4as">
+    UPS 助手 v<span id="ver" data-page-node-id="Kk1GMStR1MTgYoN6wEHpEz">1.0.0</span> · 服务 PID <span id="pid" data-page-node-id="fhPElaFxlHu8WWLZs9gKlG">—</span> · 已运行 <span id="uptime" data-page-node-id="A3KIZMrDVbBk8e7KG5CFtY">—</span>
+  </footer>
+</div>
+
+<script>
+/* =========================================================================
+ * 主逻辑：每 3 秒轮询 /api/status，配置表单提交到 /api/config
+ * ========================================================================= */
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var POLL_MS = 3000;
+
+  // API 基址：页面由飞牛 Nginx 反代在 /cgi/ThirdParty/UPS-Helper/index.cgi/ 之下提供，
+  // 所有 API 请求必须先落在该 CGI 前缀内，才能被反代转发到后端（127.0.0.1:53713）。
+  // 若用绝对路径 /api/... 会绕过反代直接打到飞牛 Nginx 根目录，收到 HTML 错误页，
+  // 前端按 JSON 解析即报 "Unexpected token '<'"。故基址随当前页面路径动态计算。
+  var API_BASE = (function () {
+    var p = window.location.pathname;
+    var idx = p.lastIndexOf('index.cgi');
+    if (idx >= 0) {
+      return p.slice(0, idx + 'index.cgi'.length) + '/';
+    }
+    // 兜底：取当前文档所在目录（以 / 结尾）
+    return p.replace(/[^/]*$/, '');
+  })();
+
+  function fmt(n, d) { if (n === null || n === undefined || isNaN(n)) return '—'; return Number(n).toFixed(d === undefined ? 1 : d); }
+  function fmtDuration(sec) {
+    if (!sec || sec < 0) return '—';
+    sec = Math.round(sec);
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    if (h > 0) return h + ' 小时 ' + m + ' 分';
+    if (m > 0) return m + ' 分 ' + s + ' 秒';
+    return s + ' 秒';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function setConn(connected, text, kind) {
+    $('connDot').className = 'dot ' + (kind || (connected ? 'ok' : 'bad'));
+    $('connText').textContent = text;
+  }
+
+  function applyAuthVisibility() {
+    var on = $('fAuthOn').checked;
+    $('authFields').style.display = on ? 'block' : 'none';
+    $('fAuthLabel').textContent = on ? '开启' : '关闭';
+    // 开关与文字下边距同步：关闭 0px，打开恢复 8px
+    $('fAuthOn').parentElement.style.marginBottom = on ? '8px' : '0px';
+    $('fAuthLabel').style.marginBottom = on ? '8px' : '0px';
+  }
+
+  function renderStatusTags(status) {
+    var map = {
+      'OL': '在线（市电正常供电）',
+      'OB': '电池供电（市电断开，使用电池）',
+      'LB': '低电量（电池即将耗尽）',
+      'CHRG': '充电中',
+      'DISCHRG': '放电中',
+      'OVER': '过载（负载超过额定功率）',
+      'RB': '需更换电池'
+    };
+    var raw = (status || '').trim();
+    if (!raw) { $('mStatus').innerHTML = '<span style="color:var(--text-secondary)">—</span>'; return; }
+    var parts = raw.split(/\s+/);
+    var html = parts.map(function (p) {
+      var zh = map[p];
+      return '<span class="flag on">' + escapeHtml(p) + (zh ? ' · ' + zh : '') + '</span>';
+    }).join('');
+    $('mStatus').innerHTML = html;
+  }
+
+  function render(s) {
+    var ups = s.ups || {}, usbip = s.usbip || {}, nut = s.nut || {}, svc = s.service || {};
+
+    renderMountBanner(s);
+
+    // 连接状态：NUT 已连 + USB/IP 可服务 视为正常
+    var connected = nut.connected && usbip.listening;
+    var kind = connected ? 'ok' : (nut.connected ? 'warn' : 'bad');
+    var txt = nut.connected ? 'UPS 已连接' : (nut.last_error ? 'UPS 未连接' : '连接中…');
+    setConn(connected, txt, kind);
+
+    $('mInV').innerHTML  = fmt(ups.input_voltage) + '<small>V</small>';
+    $('mOutV').innerHTML = fmt(ups.output_voltage) + '<small>V</small>';
+    $('mBatV').innerHTML = fmt(ups.battery_voltage) + '<small>V</small>';
+    $('mFreq').innerHTML = fmt(ups.input_frequency) + '<small>Hz</small>';
+    $('mRun').textContent = fmtDuration(ups.battery_runtime);
+    renderStatusTags(ups.status);
+
+    var ch = ups.battery_charge || 0;
+    $('mCharge').innerHTML = fmt(ch, 0) + '<small>%</small>';
+    $('chargeBar').style.width = Math.max(0, Math.min(100, ch)) + '%';
+
+    $('ver').textContent = svc.version || '1.0.0';
+    $('pid').textContent = svc.pid || '—';
+    $('uptime').textContent = fmtDuration(svc.uptime_seconds);
+  }
+
+  // 挂载引导横幅：依据 NUT 连接状态与虚拟设备是否已挂到 vhci，引导用户
+  // 「等设备挂好再去飞牛设置页」，避免其提前开关导致飞牛缓存"无 UPS"。
+  function renderMountBanner(s) {
+    var nut = s.nut || {}, mount = s.mount || {}, ups = s.ups || {};
+    var connected = !!nut.connected, mounted = !!mount.attached;
+    var banner = $('mountBanner'), dot = $('mountDot'),
+        title = $('mountTitle'), sub = $('mountSub');
+    // 横幅仅保留标题，不显示副标题（保持界面简洁）。
+    sub.textContent = '';
+    banner.className = 'banner';
+    if (!connected) {
+      var le = nut.last_error || '';
+      banner.classList.add('warn');
+      dot.className = 'dot warn';
+      if (le.indexOf('remote_ups') >= 0 || le.indexOf('不能为空') >= 0) {
+        title.textContent = '请先填写 UPS 名称@IP 地址';
+      } else {
+        title.textContent = '正在连接主服务器 UPS…';
+      }
+    } else if (!mounted) {
+      banner.classList.add('info');
+      dot.className = 'dot info';
+      title.textContent = 'UPS 已连接（' + (mount.model || ups.model || '获取型号中') + '），正在挂载虚拟设备…';
+    } else {
+      banner.classList.add('ok');
+      dot.className = 'dot ok';
+      title.textContent = '虚拟 UPS 设备已挂载 ✓ 请前往系统设置 → 硬件和电源 → 启用 UPS 支持';
+    }
+  }
+
+  function applyConfig(c) {
+    $('fRemote').value = c.remote_ups || '';
+    var hasAuth = !!(c.nut_user || c.nut_pass);
+    $('fAuthOn').checked = hasAuth;
+    $('fNUTUser').value = c.nut_user || '';
+    $('fNUTPass').value = c.nut_pass || '';
+    applyAuthVisibility();
+  }
+
+  function poll() {
+    fetch(API_BASE + 'api/status', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (s) { render(s); })
+      .catch(function () { setConn(false, '无法连接服务', 'bad'); });
+  }
+
+  function loadConfig() {
+    fetch(API_BASE + 'api/config', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(applyConfig)
+      .catch(function () {});
+  }
+
+  // Token 自动获取，用户无需手动复制粘贴。
+  // 入口由飞牛 Nginx 反代（后端仅监听回环），能打开本页面的
+  // 请求必然已通过飞牛登录会话校验，因此 /api/token 可以安全地对页面自身提供。
+  var tokenCache = '';
+
+  function fetchToken() {
+    return fetch(API_BASE + 'api/token', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        var t = (b && b.token) || '';
+        if (t) {
+          tokenCache = t;
+          try { localStorage.setItem('ups_api_token', t); } catch (e) {}
+        }
+        return tokenCache;
+      })
+      .catch(function () { return tokenCache; });
+  }
+
+  // ensureToken 依次尝试：内存缓存 → localStorage → 现取一次。
+  // 这样换浏览器或清空 localStorage 后仍能自动恢复，不会卡在 401。
+  function ensureToken() {
+    if (tokenCache) { return Promise.resolve(tokenCache); }
+    try { tokenCache = localStorage.getItem('ups_api_token') || ''; } catch (e) {}
+    if (tokenCache) { return Promise.resolve(tokenCache); }
+    return fetchToken();
+  }
+
+  $('fAuthOn').addEventListener('change', applyAuthVisibility);
+
+  $('cfgForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    // 只提交普通用户需要修改的连接字段；后端以当前配置为基准合并，
+    // 端口/自动挂载等高级字段保留原值（服务端 Normalize + 增量更新）。
+    // 密码框为脱敏占位符 "******" 时视为"未修改"，提交空串由后端沿用旧密码。
+    var passVal = $('fNUTPass').value.trim();
+    if (passVal === '******') { passVal = ''; }
+    var payload = {
+      remote_ups: $('fRemote').value.trim(),
+      nut_user: $('fAuthOn').checked ? $('fNUTUser').value.trim() : '',
+      nut_pass: $('fAuthOn').checked ? passVal : ''
+    };
+    var btn = $('saveBtn');
+    btn.disabled = true; btn.textContent = '保存中…';
+    ensureToken()
+      .then(function (token) {
+        return fetch(API_BASE + 'api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Api-Token': token },
+          body: JSON.stringify(payload)
+        });
+      })
+      .then(function (r) { return r.json().then(function (b) { return { ok: r.ok, status: r.status, body: b }; }); })
+      .then(function (res) {
+        var msg = $('msg');
+        if (res.status === 401) {
+          msg.className = 'msg err';
+          // 401 多半是缓存了旧 token（如重装后 token 变了），清掉重取一次即可。
+          tokenCache = '';
+          try { localStorage.removeItem('ups_api_token'); } catch (e) {}
+          msg.textContent = '认证失败，已重置本地 Token 缓存，请重试一次';
+        } else if (res.ok && res.body && res.body.ok) {
+          msg.className = 'msg ok';
+          msg.textContent = '配置已保存并热重载：' + ((res.body.changed || []).join('、') || '无变更');
+        } else {
+          msg.className = 'msg err';
+          msg.textContent = '保存失败：' + ((res.body && (res.body.message || res.body.error)) || '未知错误');
+        }
+        setTimeout(function () { msg.className = 'msg'; }, 6000);
+      })
+      .catch(function (e) {
+        var msg = $('msg'); msg.className = 'msg err'; msg.textContent = '保存失败：' + e;
+        setTimeout(function () { msg.className = 'msg'; }, 6000);
+      })
+      .finally(function () { btn.disabled = false; btn.textContent = '保存配置'; });
+  });
+
+  loadConfig();
+  fetchToken();
+  poll();
+  setInterval(poll, POLL_MS);
+})();
+</script>
+</body>
+</html>

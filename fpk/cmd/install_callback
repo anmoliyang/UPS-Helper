@@ -1,0 +1,184 @@
+#!/bin/sh
+# cmd/install_callback — 安装完成后由 fnOS 调用一次。
+# 职责：
+#   1. 确保配置目录存在
+#   2. 读取向导值（WIZARD_<field> 环境变量）写入 config.json
+#   3. 关键：若 config.json 已存在（卸载重装 / 升级回调），逐字段保留旧值，
+#      仅覆盖向导中用户明确填写的字段，避免清空用户的连接配置。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含命令 trace，可能夹带明文凭据：收紧为仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === install_callback start args=[$*] ==="
+# 日志若落在 /tmp（TRIM_TEMP_LOGFILE），升级完成后会被框架清理；退出前同步一份到
+# 持久目录，保证升级后仍可取证。
+trap 'cp "$LOGFILE" "$LOG_DIR/lifecycle.log" 2>/dev/null || true' EXIT
+echo "ENV TRIM_PKGETC=${TRIM_PKGETC:-<unset>} TRIM_TEMP_LOGFILE=${TRIM_TEMP_LOGFILE:-<unset>}"
+# 注意：此处绝不打印 nut_pass。WIZARD_nut_pass 与从旧 config.json 读回的密码都是明文，
+# 一旦落日志（或落到 set -x 的 trace 里）等于把 NUT 凭据泄给任何能读该文件的本地用户。
+echo "WIZARD remote_ups=${WIZARD_remote_ups:-<unset>} server_port=${WIZARD_server_port:-<unset>} http_port=${WIZARD_http_port:-<unset>} auto_mount=${WIZARD_auto_mount:-<unset>} nut_user=${WIZARD_nut_user:-<unset>} nut_pass=<redacted>"
+set -x
+
+CFG_DIR="${TRIM_PKGETC}"
+CFG="$CFG_DIR/config.json"
+
+mkdir -p "$CFG_DIR"
+
+# 极简 JSON 字符串净化：去掉换行并转义反斜杠与双引号，避免破坏 JSON 结构
+sanitize_json_str() {
+  printf '%s' "$1" \
+    | tr -d '\n\r' \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# 从已有 config.json 提取字符串字段值（无则输出空）
+get_str() {
+  grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$CFG" 2>/dev/null \
+    | head -n1 \
+    | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/'
+}
+# 提取数值字段（无则输出空）
+get_num() {
+  grep -o "\"$1\"[[:space:]]*:[[:space:]]*[0-9]*" "$CFG" 2>/dev/null \
+    | head -n1 \
+    | sed -E 's/.*:[[:space:]]*//'
+}
+# 提取布尔字段（无则输出空）
+get_bool() {
+  grep -o "\"$1\"[[:space:]]*:[[:space:]]*\(true\|false\)" "$CFG" 2>/dev/null \
+    | head -n1 \
+    | sed -E 's/.*:[[:space:]]*//'
+}
+
+# remote_ups 取值顺序：向导填了 → 用向导值；否则读 etc 既有配置（升级/重配复用）；
+# etc 也无 → 从 var 备份整份还原（升级时 fnOS 会重置 etc，备份是「UPS 名称@IP」
+# 不丢的还原源）；备份也不在 → 空配置（全新安装，由用户在界面填写）。
+# 真正的卸载会删除备份，故卸载后重装不继承曾填写的连接信息，不泄漏私人配置。
+
+# ---- 逐字段：向导非空 → 用向导值；否则 → 默认（重装不继承旧值）----
+
+REMOTE_UPS_RAW="${WIZARD_remote_ups:-}"
+if [ -n "$REMOTE_UPS_RAW" ]; then
+  REMOTE_UPS=$(sanitize_json_str "$REMOTE_UPS_RAW")
+else
+  # 升级/重装时若 etc 仍保留既有配置（fnOS 升级通常复用 etc 目录），保留原 remote_ups，
+  # 避免用户升级后丢失「UPS 名称@IP」；真正的全新安装 / 卸载后重装时 etc 已被
+  # uninstall_callback 清空，此处读到空值，仍由用户在 UI 填写（不泄漏旧值）。
+  # 与下方 nut_user / nut_pass 的处理保持一致：升级保留、重装清空。
+  REMOTE_UPS=$(sanitize_json_str "$(get_str remote_ups)")
+fi
+
+# etc 无既有值、向导也未提供时，从 var 备份整份还原：升级时 fnOS 会重置 etc 目录，
+# 此处读不到旧值，而备份仍含升级前的连接配置。整份 cp 而非逐字段模板，可保留
+# api_token 等模板未覆盖的字段。备份仅在升级路径存在——真正卸载时 uninstall_callback
+# 会删除它，故卸载后全新安装仍回到空白。
+if [ -z "$REMOTE_UPS" ]; then
+  BAK_DIR="${TRIM_PKGVAR:-/var/lib/UPS-Helper}"
+  BAK="$BAK_DIR/UPS-Helper-config.bak"
+  BAK_UPS=""
+  if [ -f "$BAK" ]; then
+    BAK_UPS=$(grep -o '"remote_ups"[[:space:]]*:[[:space:]]*"[^"]*"' "$BAK" 2>/dev/null \
+              | head -n1 | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/')
+  fi
+  if [ -n "$BAK_UPS" ]; then
+    cp "$BAK" "$CFG"
+    chmod 600 "$CFG"
+    echo "install_callback: etc 无配置，已从 var 备份整份还原（remote_ups=$BAK_UPS）" >>"$LOGFILE"
+    exit 0
+  fi
+fi
+
+NUT_USER_RAW="${WIZARD_nut_user:-}"
+if [ -n "$NUT_USER_RAW" ]; then
+  NUT_USER=$(sanitize_json_str "$NUT_USER_RAW")
+else
+  NUT_USER=$(sanitize_json_str "$(get_str nut_user)")
+fi
+
+# 密码处理期间必须关闭 trace：set -x 会把 `NUT_PASS=<明文>` 原样写进日志，
+# 与"配置文件 0600"的加固自相矛盾。用户名不是秘密，可留在 trace 里便于排查。
+set +x
+NUT_PASS_RAW="${WIZARD_nut_pass:-}"
+if [ -n "$NUT_PASS_RAW" ]; then
+  NUT_PASS=$(sanitize_json_str "$NUT_PASS_RAW")
+else
+  NUT_PASS=$(sanitize_json_str "$(get_str nut_pass)")
+fi
+set -x
+
+AUTO_MOUNT_TARGET_OLD=$(get_str auto_mount_target)
+if [ -n "$AUTO_MOUNT_TARGET_OLD" ]; then
+  TARGET=$(sanitize_json_str "$AUTO_MOUNT_TARGET_OLD")
+else
+  TARGET="127.0.0.1:3240@1-1"
+fi
+
+SERVER_PORT_RAW="${WIZARD_server_port:-}"
+if [ -n "$SERVER_PORT_RAW" ]; then
+  SERVER_PORT=$(printf '%s' "$SERVER_PORT_RAW" | tr -cd '0-9')
+else
+  SERVER_PORT=$(get_num server_port)
+fi
+[ -z "$SERVER_PORT" ] && SERVER_PORT=3240
+
+HTTP_PORT_RAW="${WIZARD_http_port:-}"
+if [ -n "$HTTP_PORT_RAW" ]; then
+  HTTP_PORT=$(printf '%s' "$HTTP_PORT_RAW" | tr -cd '0-9')
+else
+  HTTP_PORT=$(get_num http_port)
+fi
+[ -z "$HTTP_PORT" ] && HTTP_PORT=53713
+
+AUTO_MOUNT_RAW="${WIZARD_auto_mount:-}"
+if [ -n "$AUTO_MOUNT_RAW" ]; then
+  case "$(printf '%s' "$AUTO_MOUNT_RAW" | tr '[:upper:]' '[:lower:]')" in
+    1|true|on|yes) AUTO_MOUNT="true" ;;
+    *)             AUTO_MOUNT="false" ;;
+  esac
+else
+  AUTO_MOUNT=$(get_bool auto_mount)
+  [ -z "$AUTO_MOUNT" ] && AUTO_MOUNT="true"
+fi
+
+# 原子写入
+TMP="$CFG_DIR/.config-$$.json"
+cat > "$TMP" <<JSON
+{
+  "remote_ups": "${REMOTE_UPS}",
+  "server_port": ${SERVER_PORT},
+  "auto_mount": ${AUTO_MOUNT},
+  "auto_mount_target": "${TARGET}",
+  "http_port": ${HTTP_PORT},
+  "nut_user": "${NUT_USER}",
+  "nut_pass": "${NUT_PASS}"
+}
+JSON
+chmod 600 "$TMP"
+mv -f "$TMP" "$CFG"
+
+# 把当前配置同步到 var 备份（var 目录升级不清），作为下一次升级的还原源。
+# 仅当 remote_ups 非空时才覆盖备份：升级过程中 etc 若已被清空，此处拿到的是
+# 空配置，用它覆盖会把 upgrade_init / 运行期镜像留下的有效还原源冲掉。
+VAR_DIR="${TRIM_PKGVAR:-/var/lib/UPS-Helper}"
+VAR_BAK="$VAR_DIR/UPS-Helper-config.bak"
+if [ -n "$REMOTE_UPS" ]; then
+  mkdir -p "$VAR_DIR"
+  cp "$CFG" "$VAR_BAK"
+  chmod 600 "$VAR_BAK"
+fi
+
+echo "install_callback: 已写入 $CFG（保留已有连接配置），并同步 var 备份" >>"$LOGFILE"
+exit 0

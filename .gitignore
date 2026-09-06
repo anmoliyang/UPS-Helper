@@ -1,0 +1,19 @@
+# 打包产物（fpk，由 build.sh 生成，不入库）
+dist/
+*.fpk
+
+# 构建中间目录
+.build/
+
+# 编译产物（由 build.sh / build-usbip.sh 生成，不入库）
+fpk/app/UPS-Helper
+fpk/cmd/usbip
+# 注：fpk/cmd/main 是手写的生命周期脚本（非构建产物），必须入库。
+# 它曾因被忽略而丢失，导致重新打包时应用无法启动。
+
+# 项目数据（WorkBuddy 记忆/日志）
+.workbuddy/
+
+# macOS
+.DS_Store
+._*

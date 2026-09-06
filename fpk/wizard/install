@@ -1,0 +1,11 @@
+[
+  {
+    "stepTitle": "桥接配置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "UPS 助手：把另一台设备（主服务器）上已接入的 UPS，通过网络桥接成飞牛本地的 USB UPS 设备。"
+      }
+    ]
+  }
+]

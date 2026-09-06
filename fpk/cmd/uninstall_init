@@ -1,0 +1,63 @@
+#!/bin/sh
+# cmd/uninstall_init — 卸载前由 fnOS 调用。
+# 职责：停止服务，并尽力摘掉本机已挂载的 USB/IP 设备，避免卸载后内核里残留 vhci 端口。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含 set -x trace，仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === uninstall_init start args=[$*] ==="
+set -x
+
+PIDFILE="${TRIM_PKGVAR:-/var/lib/UPS-Helper}/UPS-Helper.pid"
+
+# 1) 优雅停止
+if [ -f "$PIDFILE" ]; then
+  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+    kill -INT "$PID" 2>/dev/null || true
+    i=0
+    while kill -0 "$PID" 2>/dev/null; do
+      i=$((i+1)); [ "$i" -ge 10 ] && break; sleep 1
+    done
+    if kill -0 "$PID" 2>/dev/null; then
+      kill -KILL "$PID" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$PIDFILE"
+fi
+
+# 2) 尝试 detach 所有 vhci 端口（仅摘本工具创建的 1-1，其他应用的不动）
+# 只用随包分发的 usbip：本脚本以 root 运行，回退 PATH 上的同名命令等于把 root 执行权
+# 交给 PATH 中出现的任何程序——与 mount.go 的 usbipBin() 保持同一策略。
+SELF_USBIP=""
+for cand in "/var/apps/UPS-Helper/cmd/usbip" "${TRIM_APPDEST}/../cmd/usbip"; do
+  if [ -f "$cand" ]; then
+    SELF_USBIP="$cand"
+    break
+  fi
+done
+if [ -n "$SELF_USBIP" ] && [ -x "$SELF_USBIP" ]; then
+  PORTS=$("$SELF_USBIP" port 2>/dev/null \
+          | awk '/1-1/ && /[0-9]+-1[0-9]+/ {for(i=1;i<=NF;i++) if($i ~ /^[0-9]+$/) {print $i; break}}' \
+          | tr '\n' ' ')
+  for p in $PORTS; do
+    "$SELF_USBIP" detach --port "$p" >>"$LOGFILE" 2>&1 || true
+  done
+else
+  echo "uninstall_init: 未找到随包 usbip（$SELF_USBIP），跳过 detach，不影响卸载" >>"$LOGFILE"
+fi
+
+exit 0

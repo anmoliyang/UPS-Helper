@@ -1,0 +1,71 @@
+#!/bin/sh
+# cmd/uninstall_callback — 卸载完成后由 fnOS 调用，做最终清理。
+# 日志位置遵循官方约定：生命周期脚本优先用飞牛注入的 TRIM_TEMP_LOGFILE（安装失败时
+# 飞牛会读取它展示给用户）；未注入时回退到应用数据目录下的日志文件。
+# 绝不回退 /tmp：日志含 set -x trace，放全局可写目录等于把诊断信息公开给本机所有用户。
+LOG_DIR="${TRIM_PKGVAR:-/var/apps/UPS-Helper/var}/log"
+LOGFILE="${TRIM_TEMP_LOGFILE:-$LOG_DIR/lifecycle.log}"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+exec >>"$LOGFILE" 2>&1
+# 日志含 set -x trace，仅属主可读写。
+chmod 600 "$LOGFILE" 2>/dev/null || true
+# 日志落在持久目录会持续增长：超过 2MB 只保留最后 2000 行。
+# 用 cat 覆写而非 mv，保持 inode 不变——否则 exec 持有的 fd 会继续写进被 mv 掉的旧文件。
+rotate_log() {
+  [ -f "$1" ] || return 0
+  [ "$(wc -c <"$1" 2>/dev/null || echo 0)" -gt 2097152 ] || return 0
+  tail -n 2000 "$1" >"$1.rot" 2>/dev/null && cat "$1.rot" >"$1" && rm -f "$1.rot"
+}
+rotate_log "$LOGFILE"
+echo "[$(date '+%F %T')] === uninstall_callback start args=[$*] ==="
+# 日志若落在 /tmp（TRIM_TEMP_LOGFILE），升级完成后会被框架清理；退出前同步一份到
+# 持久目录，保证升级/卸载后仍可取证。
+trap 'cp "$LOGFILE" "$LOG_DIR/lifecycle.log" 2>/dev/null || true' EXIT
+echo "ENV TRIM_OLD_APPVER=${TRIM_OLD_APPVER:-<unset>} TRIM_TEMP_UPGRADE_FOLDER=${TRIM_TEMP_UPGRADE_FOLDER:-<unset>} TRIM_PKGETC=${TRIM_PKGETC:-<unset>} TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>}"
+set -x
+
+PIDFILE="${TRIM_PKGVAR:-/var/lib/UPS-Helper}/UPS-Helper.pid"
+
+if [ -f "$PIDFILE" ]; then
+  PID="$(cat "$PIDFILE" 2>/dev/null || true)"
+  [ -n "$PID" ] && kill -INT "$PID" 2>/dev/null || true
+  rm -f "$PIDFILE"
+fi
+
+# fnOS 的升级复用本回调序列。判定"升级而非真卸载"用三重证据，任一命中即升级：
+#   1) 环境标志：TRIM_OLD_APPVER / TRIM_TEMP_UPGRADE_FOLDER 由升级流程注入；
+#   2) 执行路径：升级流程的脚本运行在应用商店下载解包目录（appcenter-downloads /
+#      -tpk / -upgrade 子路径），真卸载时脚本从已安装的 /var/apps/.../cmd 运行。
+# 升级时不能删除 etc 配置与 var 备份——它们是升级后还原「UPS 名称@IP」的来源。
+# 真卸载（以上均不命中）时正常执行清理。
+UPGRADING=""
+[ -n "${TRIM_OLD_APPVER:-}" ] && UPGRADING="1"
+[ -n "${TRIM_TEMP_UPGRADE_FOLDER:-}" ] && UPGRADING="1"
+case "$(cd "$(dirname "$0")" && pwd)" in
+  *appcenter-downloads*|*-tpk*|*-upgrade*) UPGRADING="1" ;;
+esac
+
+if [ -n "$UPGRADING" ]; then
+  echo "uninstall_callback: 检测到升级上下文（SELF=$0, OLD_APPVER=${TRIM_OLD_APPVER:-}），跳过清理 etc 配置与 var 备份" >>"$LOGFILE"
+else
+  # 删除配置目录（含 config.json 的 api_token、NUT 凭据等敏感数据），确保卸载彻底。
+  # 飞牛默认保留 var/shares，但 etc（TRIM_PKGETC）需应用自行清理，否则重装后
+  # 会残留此前写入的 token 与连接配置。
+  CFG_DIR="${TRIM_PKGETC}"
+  if [ -n "$CFG_DIR" ] && [ -d "$CFG_DIR" ]; then
+    rm -rf "$CFG_DIR"
+    echo "uninstall_callback: 已删除配置目录 $CFG_DIR" >>"$LOGFILE"
+  fi
+
+  # 同时清掉 var 目录下的配置备份（UPS-Helper-config.bak）：备份是升级还原源，
+  # 若卸载时不清，重装时 install_callback 会从它还原出旧 remote_ups，表现为
+  # 「完全卸载后重装仍自动填上旧 UPS 名称@IP」。真正的卸载必须连备份一起抹掉。
+  VAR_DIR="${TRIM_PKGVAR:-/var/lib/UPS-Helper}"
+  if [ -f "$VAR_DIR/UPS-Helper-config.bak" ]; then
+    rm -f "$VAR_DIR/UPS-Helper-config.bak"
+    echo "uninstall_callback: 已删除 var 配置备份 $VAR_DIR/UPS-Helper-config.bak" >>"$LOGFILE"
+  fi
+fi
+
+echo "uninstall_callback: 结束（upgrading=${UPGRADING:-0}）" >>"$LOGFILE"
+exit 0
